@@ -1,0 +1,5 @@
+requests
+pillow
+google-generativeai
+python-telegram-bot==13.15
+urllib3==1.26.18
