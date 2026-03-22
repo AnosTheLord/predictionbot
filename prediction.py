@@ -2,32 +2,66 @@ import random
 import asyncio
 import requests
 import datetime
+import os
 from telegram import Bot
 from PIL import Image, ImageDraw, ImageFont
-import google.generativeai as genai
+from google import genai   # ✅ NEW GEMINI SDK
 
-# 🔐 CONFIG
-TOKEN = "8201251536:AAFUH6jvqYsV33ZVsGC2Kcdybk326tbu-IA"
-CHANNEL_ID = "@The3rdUmpire"
-CRIC_API_KEY = "f19ee85a-a88b-45de-a512-1108dc464e05"
-GEMINI_API_KEY = "AIzaSyDfwK-2TP_e2U3uNhLNxmucbtaAro99GpU"
+# 🔐 ENV VARIABLES
+TOKEN = os.getenv("TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+CRIC_API_KEY = os.getenv("CRIC_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = Bot(token=TOKEN)
 
-# 🔑 Gemini setup
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-pro")
+# 🔑 Gemini client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # 🔒 Prediction cache
 prediction_cache = {}
 
-# 🎯 Filter keywords
-GOOD_MATCH_KEYWORDS = [
-    "India", "Australia", "England", "Pakistan",
-    "New Zealand", "South Africa", "Sri Lanka",
-    "Bangladesh", "West Indies",
-    "IPL", "World Cup", "Asia Cup"
+# 🌍 INTERNATIONAL TEAMS
+INTERNATIONAL_TEAMS = [
+    "india", "australia", "england", "pakistan",
+    "new zealand", "south africa", "sri lanka",
+    "bangladesh", "west indies", "afghanistan",
+    "ireland", "zimbabwe", "netherlands"
 ]
+
+# 🔄 TEAM NAME NORMALIZATION
+ALIASES = {
+    "ind": "india",
+    "aus": "australia",
+    "eng": "england",
+    "pak": "pakistan",
+    "nz": "new zealand",
+    "sa": "south africa",
+    "sl": "sri lanka",
+    "wi": "west indies"
+}
+
+def normalize(name):
+    name = name.lower()
+    for k, v in ALIASES.items():
+        if k in name:
+            return v
+    return name
+
+# 🎯 FILTER LOGIC
+def is_valid_match(team1, team2):
+    t1 = normalize(team1)
+    t2 = normalize(team2)
+
+    # 🇮🇳 Always allow India matches
+    if "india" in t1 or "india" in t2:
+        return True
+
+    # 🌍 Both international → allow
+    if any(t in t1 for t in INTERNATIONAL_TEAMS) and any(t in t2 for t in INTERNATIONAL_TEAMS):
+        return True
+
+    return False
 
 # 🌍 GET MATCHES
 def get_today_matches():
@@ -52,11 +86,13 @@ def get_today_matches():
             if today not in dt:
                 continue
 
-            # 🎯 FILTER
-            if not any(k in t1 or k in t2 for k in GOOD_MATCH_KEYWORDS):
+            if not is_valid_match(t1, t2):
                 continue
 
-            match_time = datetime.datetime.strptime(dt, "%Y-%m-%dT%H:%M:%S")
+            try:
+                match_time = datetime.datetime.strptime(dt, "%Y-%m-%dT%H:%M:%S")
+            except:
+                continue
 
             filtered.append({
                 "team1": t1,
@@ -103,14 +139,17 @@ Predict that {winner} will win.
 
 Write in a {style}.
 Give a short reasoning (2 lines max).
-
 Do not mention AI.
 """
 
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt
+        )
         reason = response.text.strip()
-    except:
+    except Exception as e:
+        print("Gemini error:", e)
         reason = f"{winner} looks stronger based on squad balance and recent form."
 
     prediction = {
@@ -123,10 +162,9 @@ Do not mention AI.
     prediction_cache[key] = prediction
     return prediction
 
-# 🎨 POSTER SYSTEM
+# 🎨 POSTER
 def create_poster(team1, team2, winner):
-    width, height = 900, 900
-    img = Image.new("RGB", (width, height), (15, 15, 30))
+    img = Image.new("RGB", (900, 900), (15, 15, 30))
     draw = ImageDraw.Draw(img)
 
     try:
@@ -138,20 +176,17 @@ def create_poster(team1, team2, winner):
         team_font = ImageFont.load_default()
         winner_font = ImageFont.load_default()
 
-    draw.text((180, 80), "MATCH PREDICTION", fill=(255, 215, 0), font=title_font)
-
+    draw.text((150, 80), "MATCH PREDICTION", fill=(255, 215, 0), font=title_font)
     draw.text((200, 300), team1, fill="white", font=team_font)
     draw.text((350, 380), "VS", fill="cyan", font=team_font)
     draw.text((200, 460), team2, fill="white", font=team_font)
-
     draw.text((200, 650), f"WINNER: {winner}", fill="yellow", font=winner_font)
 
     path = f"{team1}_vs_{team2}.png"
     img.save(path)
-
     return path
 
-# ✍️ MESSAGE FORMAT
+# ✍️ MESSAGE
 def format_msg(team1, team2, status, pred):
     return f"""
 🔥 *MATCH PREDICTION* 🔥
@@ -171,16 +206,16 @@ def format_msg(team1, team2, status, pred):
 💬 YES KARO 👍
 """
 
-# 🧲 ENGAGEMENT POSTS
+# 🧲 ENGAGEMENT
 def engagement_post():
     return random.choice([
         "🔥 Big match coming... experts confused 🤯",
-        "💥 Insider info dropping soon...",
+        "💥 Insider update dropping soon...",
         "⚠️ This match is risky...",
         "👀 Smart users already know..."
     ])
 
-# 🚀 MAIN BOT
+# 🚀 MAIN LOOP
 async def run_bot():
     while True:
         try:
@@ -204,21 +239,15 @@ async def run_bot():
                 )
 
                 poster = create_poster(t1, t2, pred["winner"])
-                await bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=open(poster, "rb")
-                )
+                with open(poster, "rb") as photo:
+                    await bot.send_photo(chat_id=CHANNEL_ID, photo=photo)
 
                 print(f"✅ Posted {t1} vs {t2}")
 
                 await asyncio.sleep(1800)
 
-            # 🔁 Engagement every 45 min
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=engagement_post()
-            )
-
+            # engagement
+            await bot.send_message(chat_id=CHANNEL_ID, text=engagement_post())
             await asyncio.sleep(2700)
 
         except Exception as e:
