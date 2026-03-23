@@ -4,66 +4,61 @@ import requests
 import datetime
 import os
 from telegram import Bot
-from PIL import Image, ImageDraw, ImageFont
-from google import genai   # ✅ NEW GEMINI SDK
+from PIL import Image, ImageDraw
+from google import genai
 
+# =========================
 # 🔐 ENV VARIABLES
+# =========================
 TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CRIC_API_KEY = os.getenv("CRIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = Bot(token=TOKEN)
-
-# 🔑 Gemini client
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 🔒 Prediction cache
-prediction_cache = {}
+# =========================
+# ⚙️ CONFIG
+# =========================
+POST_INTERVAL = 1800  # 30 minutes
+START_BEFORE_HOURS = 4
 
-# 🌍 INTERNATIONAL TEAMS
+CONFIDENCE_MIN = 78
+CONFIDENCE_MAX = 92
+
+ENABLE_POSTER = True
+
+# =========================
+# 🔒 MEMORY
+# =========================
+prediction_cache = {}
+last_post_time = {}
+
+# =========================
+# 🌍 TEAM FILTER
+# =========================
 INTERNATIONAL_TEAMS = [
     "india", "australia", "england", "pakistan",
     "new zealand", "south africa", "sri lanka",
-    "bangladesh", "west indies", "afghanistan",
-    "ireland", "zimbabwe", "netherlands"
+    "bangladesh", "west indies"
 ]
 
-# 🔄 TEAM NAME NORMALIZATION
-ALIASES = {
-    "ind": "india",
-    "aus": "australia",
-    "eng": "england",
-    "pak": "pakistan",
-    "nz": "new zealand",
-    "sa": "south africa",
-    "sl": "sri lanka",
-    "wi": "west indies"
-}
+def is_valid_match(t1, t2):
+    t1 = t1.lower()
+    t2 = t2.lower()
 
-def normalize(name):
-    name = name.lower()
-    for k, v in ALIASES.items():
-        if k in name:
-            return v
-    return name
-
-# 🎯 FILTER LOGIC
-def is_valid_match(team1, team2):
-    t1 = normalize(team1)
-    t2 = normalize(team2)
-
-    # 🇮🇳 Always allow India matches
     if "india" in t1 or "india" in t2:
         return True
 
-    # 🌍 Both international → allow
     if any(t in t1 for t in INTERNATIONAL_TEAMS) and any(t in t2 for t in INTERNATIONAL_TEAMS):
         return True
 
     return False
 
+# =========================
 # 🌍 GET MATCHES
+# =========================
 def get_today_matches():
     try:
         url = f"https://api.cricapi.com/v1/cricScore?apikey={CRIC_API_KEY}"
@@ -72,13 +67,13 @@ def get_today_matches():
         matches = data.get("data", [])
         today = str(datetime.date.today())
 
-        filtered = []
+        result = []
 
         for m in matches:
-            dt = m.get("dateTimeGMT", "")
-            status = m.get("status", "Upcoming")
+            dt = m.get("dateTimeGMT")
             t1 = m.get("t1")
             t2 = m.get("t2")
+            status = m.get("status", "Upcoming")
 
             if not (dt and t1 and t2):
                 continue
@@ -94,131 +89,131 @@ def get_today_matches():
             except:
                 continue
 
-            filtered.append({
+            result.append({
                 "team1": t1,
                 "team2": t2,
-                "status": status,
-                "time": match_time
+                "time": match_time,
+                "status": status
             })
 
-        # ⏰ SORT (Upcoming → Live)
-        filtered.sort(key=lambda x: (
-            0 if "Upcoming" in x["status"] else 1,
-            x["time"]
-        ))
-
-        return filtered
+        return result
 
     except Exception as e:
         print("❌ Fetch Error:", e)
         return []
 
-# 🧠 GEMINI AI PREDICTION
-def gemini_prediction(team1, team2):
-    key = f"{team1}_vs_{team2}"
+# =========================
+# 🧠 AI PREDICTION
+# =========================
+def get_prediction(t1, t2):
+    key = f"{t1}_{t2}"
 
     if key in prediction_cache:
         return prediction_cache[key]
 
-    winner = team1 if random.random() > 0.55 else team2
-    toss = random.choice([team1, team2])
-    confidence = random.randint(78, 92)
+    winner = random.choice([t1, t2])
+    toss = random.choice([t1, t2])
+    confidence = random.randint(CONFIDENCE_MIN, CONFIDENCE_MAX)
 
-    style = random.choice([
+    styles = [
         "confident expert tone",
         "bold aggressive tone",
-        "analytical tone"
-    ])
+        "analytical tone",
+        "excited fan tone"
+    ]
+
+    style = random.choice(styles)
 
     prompt = f"""
-You are a professional cricket analyst.
-
-Match: {team1} vs {team2}
-
-Predict that {winner} will win.
-
-Write in a {style}.
-Give a short reasoning (2 lines max).
-Do not mention AI.
+Match: {t1} vs {t2}
+Predict {winner} will win.
+Write in {style}. Keep it under 2 lines.
 """
 
     try:
-        response = client.models.generate_content(
+        res = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=prompt
         )
-        reason = response.text.strip()
-    except Exception as e:
-        print("Gemini error:", e)
-        reason = f"{winner} looks stronger based on squad balance and recent form."
+        reason = res.text.strip()
+    except:
+        reason = f"{winner} looks stronger based on current form."
 
-    prediction = {
+    pred = {
         "winner": winner,
         "toss": toss,
         "confidence": confidence,
         "reason": reason
     }
 
-    prediction_cache[key] = prediction
-    return prediction
+    prediction_cache[key] = pred
+    return pred
 
-# 🎨 POSTER
-def create_poster(team1, team2, winner):
-    img = Image.new("RGB", (900, 900), (15, 15, 30))
-    draw = ImageDraw.Draw(img)
+# =========================
+# 🎭 MULTIPLE FORMATS
+# =========================
+def generate_post(t1, t2, pred):
+    formats = [
 
-    try:
-        title_font = ImageFont.truetype("arial.ttf", 60)
-        team_font = ImageFont.truetype("arial.ttf", 50)
-        winner_font = ImageFont.truetype("arial.ttf", 55)
-    except:
-        title_font = ImageFont.load_default()
-        team_font = ImageFont.load_default()
-        winner_font = ImageFont.load_default()
+        f"""🔥 MATCH ALERT 🔥
+🏏 {t1} vs {t2}
 
-    draw.text((150, 80), "MATCH PREDICTION", fill=(255, 215, 0), font=title_font)
-    draw.text((200, 300), team1, fill="white", font=team_font)
-    draw.text((350, 380), "VS", fill="cyan", font=team_font)
-    draw.text((200, 460), team2, fill="white", font=team_font)
-    draw.text((200, 650), f"WINNER: {winner}", fill="yellow", font=winner_font)
+👉 Winner: {pred['winner']}
+📊 Confidence: {pred['confidence']}%
+""",
 
-    path = f"{team1}_vs_{team2}.png"
-    img.save(path)
-    return path
+        f"""⚡ BIG GAME COMING ⚡
 
-# ✍️ MESSAGE
-def format_msg(team1, team2, status, pred):
-    return f"""
-🔥 *MATCH PREDICTION* 🔥
+{t1} 🆚 {t2}
 
-🏏 *{team1} vs {team2}*
-
-📡 Status: {status}
-
-🤖 AI Insight:
+👀 Insight:
 {pred['reason']}
 
-📊 Confidence: {pred['confidence']}%
+🔥 Pick: {pred['winner']}
+""",
+
+        f"""📊 EXPERT ANALYSIS
+
+{t1} vs {t2}
+
+💬 {pred['reason']}
+
+🎯 Prediction: {pred['winner']}
+""",
+
+        f"""💣 HIGH VOLTAGE MATCH
+
+🏏 {t1} vs {t2}
 
 👉 Toss: {pred['toss']}
 👉 Winner: {pred['winner']}
-
-💬 YES KARO 👍
 """
+    ]
 
-# 🧲 ENGAGEMENT
-def engagement_post():
-    return random.choice([
-        "🔥 Big match coming... experts confused 🤯",
-        "💥 Insider update dropping soon...",
-        "⚠️ This match is risky...",
-        "👀 Smart users already know..."
-    ])
+    return random.choice(formats)
 
+# =========================
+# 🎨 POSTER
+# =========================
+def create_poster(t1, t2, winner):
+    img = Image.new("RGB", (800, 800), (15, 15, 30))
+    draw = ImageDraw.Draw(img)
+
+    draw.text((120, 250), f"{t1} vs {t2}", fill="white")
+    draw.text((120, 400), f"Winner: {winner}", fill="yellow")
+
+    path = f"{t1}_{t2}.png"
+    img.save(path)
+    return path
+
+# =========================
 # 🚀 MAIN LOOP
+# =========================
 async def run_bot():
     while True:
         try:
+            now = datetime.datetime.utcnow()
+
             matches = get_today_matches()
 
             if not matches:
@@ -227,33 +222,45 @@ async def run_bot():
                 continue
 
             for m in matches:
-                t1, t2 = m["team1"], m["team2"]
+                t1 = m["team1"]
+                t2 = m["team2"]
+                match_time = m["time"]
 
-                pred = gemini_prediction(t1, t2)
-                msg = format_msg(t1, t2, m["status"], pred)
+                start_time = match_time - datetime.timedelta(hours=START_BEFORE_HOURS)
 
-                await bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=msg,
-                    parse_mode="Markdown"
-                )
+                key = f"{t1}_{t2}"
 
-                poster = create_poster(t1, t2, pred["winner"])
-                with open(poster, "rb") as photo:
-                    await bot.send_photo(chat_id=CHANNEL_ID, photo=photo)
+                # Only post in window
+                if not (start_time <= now <= match_time):
+                    continue
 
-                print(f"✅ Posted {t1} vs {t2}")
+                # Prevent spam
+                last_time = last_post_time.get(key)
+                if last_time and (now - last_time).total_seconds() < POST_INTERVAL:
+                    continue
 
-                await asyncio.sleep(1800)
+                pred = get_prediction(t1, t2)
+                msg = generate_post(t1, t2, pred)
 
-            # engagement
-            await bot.send_message(chat_id=CHANNEL_ID, text=engagement_post())
-            await asyncio.sleep(2700)
+                await bot.send_message(chat_id=CHANNEL_ID, text=msg)
+
+                if ENABLE_POSTER:
+                    poster = create_poster(t1, t2, pred["winner"])
+                    with open(poster, "rb") as p:
+                        await bot.send_photo(chat_id=CHANNEL_ID, photo=p)
+
+                last_post_time[key] = now
+
+                print(f"✅ Posted: {t1} vs {t2}")
+
+            await asyncio.sleep(60)
 
         except Exception as e:
             print("❌ Error:", e)
             await asyncio.sleep(60)
 
+# =========================
 # ▶️ START
+# =========================
 if __name__ == "__main__":
     asyncio.run(run_bot())
