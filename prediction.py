@@ -16,13 +16,15 @@ CRIC_API_KEY = os.getenv("CRIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = Bot(token=TOKEN)
+
+# ✅ NEW GEMINI (CORRECT)
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # =========================
 # ⚙️ CONFIG
 # =========================
-POST_INTERVAL = 1800  # 30 min
-START_BEFORE = 4      # hours before match
+POST_INTERVAL = 1800  # 30 minutes
+START_BEFORE = 4      # 4 hours before match
 
 CONFIDENCE_MIN = 78
 CONFIDENCE_MAX = 92
@@ -36,7 +38,7 @@ prediction_cache = {}
 last_post_time = {}
 
 # =========================
-# 🌍 FILTER TEAMS
+# 🌍 TEAM FILTER
 # =========================
 INTERNATIONAL_TEAMS = [
     "india", "australia", "england", "pakistan",
@@ -103,7 +105,7 @@ def get_today_matches():
         return []
 
 # =========================
-# 🧠 AI PREDICTION (FIXED GEMINI)
+# 🧠 AI PREDICTION (FIXED)
 # =========================
 def get_prediction(t1, t2):
     key = f"{t1}_{t2}"
@@ -115,19 +117,10 @@ def get_prediction(t1, t2):
     toss = random.choice([t1, t2])
     confidence = random.randint(CONFIDENCE_MIN, CONFIDENCE_MAX)
 
-    styles = [
-        "confident expert tone",
-        "bold aggressive tone",
-        "analytical tone",
-        "excited fan tone"
-    ]
-
-    style = random.choice(styles)
-
     prompt = f"""
 Match: {t1} vs {t2}
 Predict {winner} will win.
-Write in {style}. Keep it under 2 lines.
+Give short reasoning (1-2 lines).
 """
 
     try:
@@ -140,15 +133,15 @@ Write in {style}. Keep it under 2 lines.
         print("Gemini Error:", e)
         reason = f"{winner} looks stronger based on recent form."
 
-    pred = {
+    prediction = {
         "winner": winner,
         "toss": toss,
         "confidence": confidence,
         "reason": reason
     }
 
-    prediction_cache[key] = pred
-    return pred
+    prediction_cache[key] = prediction
+    return prediction
 
 # =========================
 # 🎭 MULTI FORMAT POSTS
@@ -231,11 +224,11 @@ async def run_bot():
 
                 key = f"{t1}_{t2}"
 
-                # ⏰ Only within 4-hour window
+                # ⏰ Only post within 4-hour window
                 if not (start_time <= now <= match_time):
                     continue
 
-                # 🛑 Anti-spam (30 min per match)
+                # 🛑 Anti-spam
                 last_time = last_post_time.get(key)
                 if last_time and (now - last_time).total_seconds() < POST_INTERVAL:
                     continue
