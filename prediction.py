@@ -17,14 +17,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = Bot(token=TOKEN)
 
-# ✅ NEW GEMINI (CORRECT)
+# ✅ NEW GEMINI CLIENT (CORRECT)
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # =========================
 # ⚙️ CONFIG
 # =========================
-POST_INTERVAL = 1800  # 30 minutes
-START_BEFORE = 4      # 4 hours before match
+POST_INTERVAL = 1800   # 30 min
+START_BEFORE = 4       # 4 hours before match
 
 CONFIDENCE_MIN = 78
 CONFIDENCE_MAX = 92
@@ -105,7 +105,7 @@ def get_today_matches():
         return []
 
 # =========================
-# 🧠 AI PREDICTION (FIXED)
+# 🧠 AI PREDICTION (FINAL FIX)
 # =========================
 def get_prediction(t1, t2):
     key = f"{t1}_{t2}"
@@ -125,7 +125,7 @@ Give short reasoning (1-2 lines).
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash",  # ✅ CORRECT MODEL
             contents=prompt
         )
         reason = response.text.strip()
