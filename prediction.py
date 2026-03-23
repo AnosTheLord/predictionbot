@@ -16,15 +16,14 @@ CRIC_API_KEY = os.getenv("CRIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = Bot(token=TOKEN)
-
-# ✅ NEW GEMINI CLIENT (CORRECT)
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # =========================
 # ⚙️ CONFIG
 # =========================
-POST_INTERVAL = 1800   # 30 min
-START_BEFORE = 4       # 4 hours before match
+POST_INTERVAL = 1800          # 30 min
+START_BEFORE = 4              # 4 hours before match
+LIVE_URGENCY_INTERVAL = 1200  # 20 min
 
 CONFIDENCE_MIN = 78
 CONFIDENCE_MAX = 92
@@ -36,6 +35,8 @@ ENABLE_POSTER = True
 # =========================
 prediction_cache = {}
 last_post_time = {}
+match_started_tracker = {}
+last_urgency_time = {}
 
 # =========================
 # 🌍 TEAM FILTER
@@ -105,7 +106,7 @@ def get_today_matches():
         return []
 
 # =========================
-# 🧠 AI PREDICTION (FINAL FIX)
+# 🧠 AI PREDICTION
 # =========================
 def get_prediction(t1, t2):
     key = f"{t1}_{t2}"
@@ -125,7 +126,7 @@ Give short reasoning (1-2 lines).
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",  # ✅ CORRECT MODEL
+            model="gemini-1.5-flash",
             contents=prompt
         )
         reason = response.text.strip()
@@ -160,8 +161,7 @@ def generate_post(t1, t2, pred):
 
 {t1} 🆚 {t2}
 
-👀 Insight:
-{pred['reason']}
+👀 {pred['reason']}
 
 🔥 Pick: {pred['winner']}
 """,
@@ -201,13 +201,35 @@ def create_poster(t1, t2, winner):
     return path
 
 # =========================
+# 📊 POLL
+# =========================
+async def send_match_poll(t1, t2):
+    await bot.send_poll(
+        chat_id=CHANNEL_ID,
+        question=f"🏏 {t1} vs {t2}\nWho will win?",
+        options=[t1, t2],
+        is_anonymous=False
+    )
+
+# =========================
+# 🚨 URGENCY POSTS
+# =========================
+def urgency_post(t1, t2):
+    msgs = [
+        f"🚨 MATCH STARTED 🚨\n\n🏏 {t1} vs {t2}\n⚠️ Last chance!",
+        f"🔥 LIVE NOW 🔥\n\n{t1} vs {t2}\n👀 Smart users ready...",
+        f"⚡ GAME ON ⚡\n\n{t1} vs {t2}\n💣 Big moves incoming!",
+        f"🚨 FINAL CALL 🚨\n\n{t1} vs {t2}\n📊 Don’t miss!"
+    ]
+    return random.choice(msgs)
+
+# =========================
 # 🚀 MAIN LOOP
 # =========================
 async def run_bot():
     while True:
         try:
             now = datetime.datetime.utcnow()
-
             matches = get_today_matches()
 
             if not matches:
@@ -220,32 +242,60 @@ async def run_bot():
                 t2 = m["team2"]
                 match_time = m["time"]
 
+                key = f"{t1}_{t2}"
                 start_time = match_time - datetime.timedelta(hours=START_BEFORE)
 
-                key = f"{t1}_{t2}"
+                # =========================
+                # 🟡 PRE-MATCH POSTS
+                # =========================
+                if start_time <= now <= match_time:
 
-                # ⏰ Only post within 4-hour window
-                if not (start_time <= now <= match_time):
-                    continue
+                    last_time = last_post_time.get(key)
 
-                # 🛑 Anti-spam
-                last_time = last_post_time.get(key)
-                if last_time and (now - last_time).total_seconds() < POST_INTERVAL:
-                    continue
+                    if not last_time or (now - last_time).total_seconds() > POST_INTERVAL:
 
-                pred = get_prediction(t1, t2)
-                msg = generate_post(t1, t2, pred)
+                        pred = get_prediction(t1, t2)
+                        msg = generate_post(t1, t2, pred)
 
-                await bot.send_message(chat_id=CHANNEL_ID, text=msg)
+                        await bot.send_message(chat_id=CHANNEL_ID, text=msg)
 
-                if ENABLE_POSTER:
-                    poster = create_poster(t1, t2, pred["winner"])
-                    with open(poster, "rb") as p:
-                        await bot.send_photo(chat_id=CHANNEL_ID, photo=p)
+                        if ENABLE_POSTER:
+                            poster = create_poster(t1, t2, pred["winner"])
+                            with open(poster, "rb") as p:
+                                await bot.send_photo(chat_id=CHANNEL_ID, photo=p)
 
-                last_post_time[key] = now
+                        last_post_time[key] = now
+                        print(f"✅ Pre-match post: {t1} vs {t2}")
 
-                print(f"✅ Posted: {t1} vs {t2}")
+                # =========================
+                # 🟢 MATCH START ACTION
+                # =========================
+                if now >= match_time:
+
+                    if key not in match_started_tracker:
+
+                        await send_match_poll(t1, t2)
+
+                        await bot.send_message(
+                            chat_id=CHANNEL_ID,
+                            text=urgency_post(t1, t2)
+                        )
+
+                        match_started_tracker[key] = True
+                        print(f"🚀 Match started: {t1} vs {t2}")
+
+                    # 🔁 LIVE URGENCY LOOP
+                    last_u = last_urgency_time.get(key)
+
+                    if not last_u or (now - last_u).total_seconds() > LIVE_URGENCY_INTERVAL:
+
+                        await bot.send_message(
+                            chat_id=CHANNEL_ID,
+                            text=urgency_post(t1, t2)
+                        )
+
+                        last_urgency_time[key] = now
+                        print(f"⚡ Live urgency: {t1} vs {t2}")
 
             await asyncio.sleep(60)
 
