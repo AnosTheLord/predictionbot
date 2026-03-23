@@ -21,8 +21,8 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 # =========================
 # ⚙️ CONFIG
 # =========================
-POST_INTERVAL = 1800  # 30 minutes
-START_BEFORE_HOURS = 4
+POST_INTERVAL = 1800  # 30 min
+START_BEFORE = 4      # hours before match
 
 CONFIDENCE_MIN = 78
 CONFIDENCE_MAX = 92
@@ -30,13 +30,13 @@ CONFIDENCE_MAX = 92
 ENABLE_POSTER = True
 
 # =========================
-# 🔒 MEMORY
+# 🧠 MEMORY
 # =========================
 prediction_cache = {}
 last_post_time = {}
 
 # =========================
-# 🌍 TEAM FILTER
+# 🌍 FILTER TEAMS
 # =========================
 INTERNATIONAL_TEAMS = [
     "india", "australia", "england", "pakistan",
@@ -103,7 +103,7 @@ def get_today_matches():
         return []
 
 # =========================
-# 🧠 AI PREDICTION
+# 🧠 AI PREDICTION (FIXED GEMINI)
 # =========================
 def get_prediction(t1, t2):
     key = f"{t1}_{t2}"
@@ -131,13 +131,14 @@ Write in {style}. Keep it under 2 lines.
 """
 
     try:
-        res = client.models.generate_content(
+        response = client.models.generate_content(
             model="gemini-1.5-flash",
             contents=prompt
         )
-        reason = res.text.strip()
-    except:
-        reason = f"{winner} looks stronger based on current form."
+        reason = response.text.strip()
+    except Exception as e:
+        print("Gemini Error:", e)
+        reason = f"{winner} looks stronger based on recent form."
 
     pred = {
         "winner": winner,
@@ -150,7 +151,7 @@ Write in {style}. Keep it under 2 lines.
     return pred
 
 # =========================
-# 🎭 MULTIPLE FORMATS
+# 🎭 MULTI FORMAT POSTS
 # =========================
 def generate_post(t1, t2, pred):
     formats = [
@@ -226,15 +227,15 @@ async def run_bot():
                 t2 = m["team2"]
                 match_time = m["time"]
 
-                start_time = match_time - datetime.timedelta(hours=START_BEFORE_HOURS)
+                start_time = match_time - datetime.timedelta(hours=START_BEFORE)
 
                 key = f"{t1}_{t2}"
 
-                # Only post in window
+                # ⏰ Only within 4-hour window
                 if not (start_time <= now <= match_time):
                     continue
 
-                # Prevent spam
+                # 🛑 Anti-spam (30 min per match)
                 last_time = last_post_time.get(key)
                 if last_time and (now - last_time).total_seconds() < POST_INTERVAL:
                     continue
