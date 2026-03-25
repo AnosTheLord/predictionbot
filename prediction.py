@@ -11,7 +11,7 @@ from google import genai
 # 🔐 ENV VARIABLES
 # =========================
 TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+CHANNEL_IDS = os.getenv("CHANNEL_IDS").split(",")  # 🔥 MULTI CHANNEL
 CRIC_API_KEY = os.getenv("CRIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -37,6 +37,27 @@ prediction_cache = {}
 last_post_time = {}
 match_started_tracker = {}
 last_urgency_time = {}
+
+# =========================
+# 📤 MULTI CHANNEL SENDERS
+# =========================
+async def send_message_all(text):
+    for ch in CHANNEL_IDS:
+        await bot.send_message(chat_id=ch, text=text)
+
+async def send_photo_all(photo_path):
+    for ch in CHANNEL_IDS:
+        with open(photo_path, "rb") as p:
+            await bot.send_photo(chat_id=ch, photo=p)
+
+async def send_poll_all(t1, t2):
+    for ch in CHANNEL_IDS:
+        await bot.send_poll(
+            chat_id=ch,
+            question=f"🏏 {t1} vs {t2}\nWho will win?",
+            options=[t1, t2],
+            is_anonymous=False
+        )
 
 # =========================
 # 🌍 TEAM FILTER
@@ -145,18 +166,16 @@ Give short reasoning (1-2 lines).
     return prediction
 
 # =========================
-# 🎭 MULTI FORMAT POSTS
+# 🎭 POSTS
 # =========================
 def generate_post(t1, t2, pred):
     formats = [
-
         f"""🔥 MATCH ALERT 🔥
 🏏 {t1} vs {t2}
 
 👉 Winner: {pred['winner']}
 📊 Confidence: {pred['confidence']}%
 """,
-
         f"""⚡ BIG GAME COMING ⚡
 
 {t1} 🆚 {t2}
@@ -165,7 +184,6 @@ def generate_post(t1, t2, pred):
 
 🔥 Pick: {pred['winner']}
 """,
-
         f"""📊 EXPERT ANALYSIS
 
 {t1} vs {t2}
@@ -174,7 +192,6 @@ def generate_post(t1, t2, pred):
 
 🎯 Prediction: {pred['winner']}
 """,
-
         f"""💣 HIGH VOLTAGE MATCH
 
 🏏 {t1} vs {t2}
@@ -201,27 +218,15 @@ def create_poster(t1, t2, winner):
     return path
 
 # =========================
-# 📊 POLL
-# =========================
-async def send_match_poll(t1, t2):
-    await bot.send_poll(
-        chat_id=CHANNEL_ID,
-        question=f"🏏 {t1} vs {t2}\nWho will win?",
-        options=[t1, t2],
-        is_anonymous=False
-    )
-
-# =========================
-# 🚨 URGENCY POSTS
+# 🚨 URGENCY
 # =========================
 def urgency_post(t1, t2):
-    msgs = [
-        f"🚨 MATCH STARTED 🚨\n\n🏏 {t1} vs {t2}\n⚠️ Last chance!",
-        f"🔥 LIVE NOW 🔥\n\n{t1} vs {t2}\n👀 Smart users ready...",
-        f"⚡ GAME ON ⚡\n\n{t1} vs {t2}\n💣 Big moves incoming!",
-        f"🚨 FINAL CALL 🚨\n\n{t1} vs {t2}\n📊 Don’t miss!"
-    ]
-    return random.choice(msgs)
+    return random.choice([
+        f"🚨 MATCH STARTED 🚨\n🏏 {t1} vs {t2}\n⚠️ Last chance!",
+        f"🔥 LIVE NOW 🔥\n{t1} vs {t2}\n👀 Smart users ready...",
+        f"⚡ GAME ON ⚡\n{t1} vs {t2}\n💣 Big moves incoming!",
+        f"🚨 FINAL CALL 🚨\n{t1} vs {t2}\n📊 Don’t miss!"
+    ])
 
 # =========================
 # 🚀 MAIN LOOP
@@ -245,57 +250,36 @@ async def run_bot():
                 key = f"{t1}_{t2}"
                 start_time = match_time - datetime.timedelta(hours=START_BEFORE)
 
-                # =========================
-                # 🟡 PRE-MATCH POSTS
-                # =========================
+                # 🟡 PRE-MATCH
                 if start_time <= now <= match_time:
-
                     last_time = last_post_time.get(key)
 
                     if not last_time or (now - last_time).total_seconds() > POST_INTERVAL:
-
                         pred = get_prediction(t1, t2)
                         msg = generate_post(t1, t2, pred)
 
-                        await bot.send_message(chat_id=CHANNEL_ID, text=msg)
+                        await send_message_all(msg)
 
                         if ENABLE_POSTER:
                             poster = create_poster(t1, t2, pred["winner"])
-                            with open(poster, "rb") as p:
-                                await bot.send_photo(chat_id=CHANNEL_ID, photo=p)
+                            await send_photo_all(poster)
 
                         last_post_time[key] = now
-                        print(f"✅ Pre-match post: {t1} vs {t2}")
 
-                # =========================
-                # 🟢 MATCH START ACTION
-                # =========================
+                # 🟢 MATCH START
                 if now >= match_time:
 
                     if key not in match_started_tracker:
-
-                        await send_match_poll(t1, t2)
-
-                        await bot.send_message(
-                            chat_id=CHANNEL_ID,
-                            text=urgency_post(t1, t2)
-                        )
-
+                        await send_poll_all(t1, t2)
+                        await send_message_all(urgency_post(t1, t2))
                         match_started_tracker[key] = True
-                        print(f"🚀 Match started: {t1} vs {t2}")
 
-                    # 🔁 LIVE URGENCY LOOP
+                    # 🔁 LIVE URGENCY
                     last_u = last_urgency_time.get(key)
 
                     if not last_u or (now - last_u).total_seconds() > LIVE_URGENCY_INTERVAL:
-
-                        await bot.send_message(
-                            chat_id=CHANNEL_ID,
-                            text=urgency_post(t1, t2)
-                        )
-
+                        await send_message_all(urgency_post(t1, t2))
                         last_urgency_time[key] = now
-                        print(f"⚡ Live urgency: {t1} vs {t2}")
 
             await asyncio.sleep(60)
 
