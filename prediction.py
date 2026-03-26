@@ -4,14 +4,14 @@ import requests
 import datetime
 import os
 from telegram import Bot
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from google import genai
 
 # =========================
-# 🔐 ENV VARIABLES
+# 🔐 ENV
 # =========================
 TOKEN = os.getenv("TOKEN")
-CHANNEL_IDS = os.getenv("CHANNEL_IDS").split(",")  # 🔥 MULTI CHANNEL
+CHANNELS = os.getenv("CHANNELS")  # @ch1,@ch2
 CRIC_API_KEY = os.getenv("CRIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -19,117 +19,108 @@ bot = Bot(token=TOKEN)
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # =========================
+# 📡 MULTI CHANNEL
+# =========================
+def get_channels():
+    return [c.strip() for c in CHANNELS.split(",") if c.strip()]
+
+async def send_all_message(text, parse_mode=None):
+    for ch in get_channels():
+        try:
+            await bot.send_message(ch, text, parse_mode=parse_mode)
+        except Exception as e:
+            print(f"❌ {ch} msg error:", e)
+
+async def send_all_photo(path):
+    for ch in get_channels():
+        try:
+            with open(path, "rb") as p:
+                await bot.send_photo(ch, p)
+        except Exception as e:
+            print(f"❌ {ch} photo error:", e)
+
+async def send_all_poll(t1, t2):
+    for ch in get_channels():
+        try:
+            await bot.send_poll(
+                ch,
+                f"{t1} vs {t2} - Who wins?",
+                [t1, t2],
+                is_anonymous=False
+            )
+        except Exception as e:
+            print(f"❌ {ch} poll error:", e)
+
+# =========================
 # ⚙️ CONFIG
 # =========================
-POST_INTERVAL = 1800          # 30 min
-START_BEFORE = 4              # 4 hours before match
-LIVE_URGENCY_INTERVAL = 1200  # 20 min
-
-CONFIDENCE_MIN = 78
-CONFIDENCE_MAX = 92
-
-ENABLE_POSTER = True
+POST_INTERVAL = 1800
+START_BEFORE = 4
+LIVE_URGENCY_INTERVAL = 1200
 
 # =========================
 # 🧠 MEMORY
 # =========================
 prediction_cache = {}
 last_post_time = {}
-match_started_tracker = {}
-last_urgency_time = {}
+match_started = {}
+last_urgency = {}
 
 # =========================
-# 📤 MULTI CHANNEL SENDERS
+# 🌍 FILTER
 # =========================
-async def send_message_all(text):
-    for ch in CHANNEL_IDS:
-        await bot.send_message(chat_id=ch, text=text)
-
-async def send_photo_all(photo_path):
-    for ch in CHANNEL_IDS:
-        with open(photo_path, "rb") as p:
-            await bot.send_photo(chat_id=ch, photo=p)
-
-async def send_poll_all(t1, t2):
-    for ch in CHANNEL_IDS:
-        await bot.send_poll(
-            chat_id=ch,
-            question=f"🏏 {t1} vs {t2}\nWho will win?",
-            options=[t1, t2],
-            is_anonymous=False
-        )
-
-# =========================
-# 🌍 TEAM FILTER
-# =========================
-INTERNATIONAL_TEAMS = [
-    "india", "australia", "england", "pakistan",
-    "new zealand", "south africa", "sri lanka",
-    "bangladesh", "west indies"
+INTERNATIONAL = [
+    "india","australia","england","pakistan",
+    "new zealand","south africa","sri lanka",
+    "bangladesh","west indies"
 ]
 
-def is_valid_match(t1, t2):
-    t1 = t1.lower()
-    t2 = t2.lower()
-
+def is_valid(t1, t2):
+    t1, t2 = t1.lower(), t2.lower()
     if "india" in t1 or "india" in t2:
         return True
-
-    if any(t in t1 for t in INTERNATIONAL_TEAMS) and any(t in t2 for t in INTERNATIONAL_TEAMS):
+    if any(x in t1 for x in INTERNATIONAL) and any(x in t2 for x in INTERNATIONAL):
         return True
-
     return False
 
 # =========================
-# 🌍 GET MATCHES
+# 🌍 MATCHES
 # =========================
-def get_today_matches():
+def get_matches():
     try:
         url = f"https://api.cricapi.com/v1/cricScore?apikey={CRIC_API_KEY}"
         data = requests.get(url).json()
 
-        matches = data.get("data", [])
         today = str(datetime.date.today())
+        res = []
 
-        result = []
-
-        for m in matches:
+        for m in data.get("data", []):
             dt = m.get("dateTimeGMT")
             t1 = m.get("t1")
             t2 = m.get("t2")
-            status = m.get("status", "Upcoming")
 
             if not (dt and t1 and t2):
                 continue
-
             if today not in dt:
                 continue
-
-            if not is_valid_match(t1, t2):
+            if not is_valid(t1, t2):
                 continue
 
             try:
-                match_time = datetime.datetime.strptime(dt, "%Y-%m-%dT%H:%M:%S")
+                mt = datetime.datetime.strptime(dt, "%Y-%m-%dT%H:%M:%S")
             except:
                 continue
 
-            result.append({
-                "team1": t1,
-                "team2": t2,
-                "time": match_time,
-                "status": status
-            })
+            res.append({"t1": t1, "t2": t2, "time": mt})
 
-        return result
-
-    except Exception as e:
-        print("❌ Fetch Error:", e)
+        return res
+    except:
         return []
 
 # =========================
-# 🧠 AI PREDICTION
+# 🧠 AI
 # =========================
-def get_prediction(t1, t2):
+def predict(t1, t2):
     key = f"{t1}_{t2}"
 
     if key in prediction_cache:
@@ -137,81 +128,52 @@ def get_prediction(t1, t2):
 
     winner = random.choice([t1, t2])
     toss = random.choice([t1, t2])
-    confidence = random.randint(CONFIDENCE_MIN, CONFIDENCE_MAX)
-
-    prompt = f"""
-Match: {t1} vs {t2}
-Predict {winner} will win.
-Give short reasoning (1-2 lines).
-"""
 
     try:
-        response = client.models.generate_content(
+        r = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=prompt
+            contents=f"{t1} vs {t2}. Predict winner shortly."
         )
-        reason = response.text.strip()
-    except Exception as e:
-        print("Gemini Error:", e)
-        reason = f"{winner} looks stronger based on recent form."
+        reason = r.text.strip()
+    except:
+        reason = f"{winner} looks stronger."
 
-    prediction = {
-        "winner": winner,
-        "toss": toss,
-        "confidence": confidence,
-        "reason": reason
-    }
-
-    prediction_cache[key] = prediction
-    return prediction
+    data = {"winner": winner, "toss": toss, "reason": reason}
+    prediction_cache[key] = data
+    return data
 
 # =========================
-# 🎭 POSTS
+# 🎨 TOSS THEMES
 # =========================
-def generate_post(t1, t2, pred):
-    formats = [
-        f"""🔥 MATCH ALERT 🔥
-🏏 {t1} vs {t2}
-
-👉 Winner: {pred['winner']}
-📊 Confidence: {pred['confidence']}%
-""",
-        f"""⚡ BIG GAME COMING ⚡
-
-{t1} 🆚 {t2}
-
-👀 {pred['reason']}
-
-🔥 Pick: {pred['winner']}
-""",
-        f"""📊 EXPERT ANALYSIS
-
-{t1} vs {t2}
-
-💬 {pred['reason']}
-
-🎯 Prediction: {pred['winner']}
-""",
-        f"""💣 HIGH VOLTAGE MATCH
-
-🏏 {t1} vs {t2}
-
-👉 Toss: {pred['toss']}
-👉 Winner: {pred['winner']}
-"""
+def toss_post(t1, t2, toss):
+    themes = [
+        f"🔵 AI TOSS SIGNAL\n🏏 {t1} vs {t2}\n⚡ Toss: {toss}",
+        f"🔴 FINAL TOSS\n🏏 {t1} vs {t2}\n🚨 {toss}",
+        f"🟡 PREMIUM\n🏏 {t1} vs {t2}\n💎 {toss}",
+        f"🟢 SAFE PICK\n🏏 {t1} vs {t2}\n✅ {toss}",
+        f"🟣 VIP SIGNAL\n🏏 {t1} vs {t2}\n🎯 {toss}"
     ]
-
-    return random.choice(formats)
+    return random.choice(themes)
 
 # =========================
-# 🎨 POSTER
+# 🎭 MATCH POST
 # =========================
-def create_poster(t1, t2, winner):
-    img = Image.new("RGB", (800, 800), (15, 15, 30))
-    draw = ImageDraw.Draw(img)
+def match_post(t1, t2, p):
+    return f"🔥 {t1} vs {t2}\nWinner: {p['winner']}\n{p['reason']}"
 
-    draw.text((120, 250), f"{t1} vs {t2}", fill="white")
-    draw.text((120, 400), f"Winner: {winner}", fill="yellow")
+# =========================
+# 🎨 POSTER v2
+# =========================
+def poster(t1, t2, w):
+    img = Image.new("RGB", (900, 900))
+    d = ImageDraw.Draw(img)
+
+    for y in range(900):
+        d.line([(0,y),(900,y)], fill=(20+y//5,20,40+y//3))
+
+    d.text((200,300),f"{t1} vs {t2}",fill="white")
+    d.rectangle([150,650,750,780], fill=(0,0,0))
+    d.text((200,690),f"WINNER: {w}",fill=(255,215,0))
 
     path = f"{t1}_{t2}.png"
     img.save(path)
@@ -220,12 +182,11 @@ def create_poster(t1, t2, winner):
 # =========================
 # 🚨 URGENCY
 # =========================
-def urgency_post(t1, t2):
+def urgency(t1, t2):
     return random.choice([
-        f"🚨 MATCH STARTED 🚨\n🏏 {t1} vs {t2}\n⚠️ Last chance!",
-        f"🔥 LIVE NOW 🔥\n{t1} vs {t2}\n👀 Smart users ready...",
-        f"⚡ GAME ON ⚡\n{t1} vs {t2}\n💣 Big moves incoming!",
-        f"🚨 FINAL CALL 🚨\n{t1} vs {t2}\n📊 Don’t miss!"
+        f"🚨 LIVE {t1} vs {t2}",
+        f"🔥 GAME ON {t1} vs {t2}",
+        f"⚡ FINAL CALL {t1} vs {t2}"
     ])
 
 # =========================
@@ -235,51 +196,42 @@ async def run_bot():
     while True:
         try:
             now = datetime.datetime.utcnow()
-            matches = get_today_matches()
-
-            if not matches:
-                print("⛔ No matches today")
-                await asyncio.sleep(3600)
-                continue
+            matches = get_matches()
 
             for m in matches:
-                t1 = m["team1"]
-                t2 = m["team2"]
-                match_time = m["time"]
-
+                t1, t2 = m["t1"], m["t2"]
+                mt = m["time"]
                 key = f"{t1}_{t2}"
-                start_time = match_time - datetime.timedelta(hours=START_BEFORE)
 
-                # 🟡 PRE-MATCH
-                if start_time <= now <= match_time:
-                    last_time = last_post_time.get(key)
+                start = mt - datetime.timedelta(hours=START_BEFORE)
 
-                    if not last_time or (now - last_time).total_seconds() > POST_INTERVAL:
-                        pred = get_prediction(t1, t2)
-                        msg = generate_post(t1, t2, pred)
+                # PRE MATCH
+                if start <= now <= mt:
+                    last = last_post_time.get(key)
+                    if not last or (now-last).total_seconds() > POST_INTERVAL:
 
-                        await send_message_all(msg)
+                        p = predict(t1, t2)
 
-                        if ENABLE_POSTER:
-                            poster = create_poster(t1, t2, pred["winner"])
-                            await send_photo_all(poster)
+                        await send_all_message(toss_post(t1, t2, p["toss"]))
+                        await send_all_message(match_post(t1, t2, p))
+
+                        img = poster(t1, t2, p["winner"])
+                        await send_all_photo(img)
 
                         last_post_time[key] = now
 
-                # 🟢 MATCH START
-                if now >= match_time:
+                # MATCH START
+                if now >= mt:
 
-                    if key not in match_started_tracker:
-                        await send_poll_all(t1, t2)
-                        await send_message_all(urgency_post(t1, t2))
-                        match_started_tracker[key] = True
+                    if key not in match_started:
+                        await send_all_poll(t1, t2)
+                        await send_all_message(urgency(t1, t2))
+                        match_started[key] = True
 
-                    # 🔁 LIVE URGENCY
-                    last_u = last_urgency_time.get(key)
-
-                    if not last_u or (now - last_u).total_seconds() > LIVE_URGENCY_INTERVAL:
-                        await send_message_all(urgency_post(t1, t2))
-                        last_urgency_time[key] = now
+                    last_u = last_urgency.get(key)
+                    if not last_u or (now-last_u).total_seconds() > LIVE_URGENCY_INTERVAL:
+                        await send_all_message(urgency(t1, t2))
+                        last_urgency[key] = now
 
             await asyncio.sleep(60)
 
